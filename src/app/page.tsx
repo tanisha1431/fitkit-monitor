@@ -1,65 +1,177 @@
-import Image from "next/image";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { TopBar } from "@/components/layout/TopBar"
+import { KPICard } from "@/components/shared/KPICard"
+import { StatusBadge } from "@/components/shared/StatusBadge"
+import { getSupabaseHealth, getFunctionLogsStats } from "@/lib/queries/system-health"
+import { getLogStats } from "@/lib/queries/functions"
+// TODO: Uncomment when Upstash and Sentry are configured
+// import { getRedisInfo } from "@/lib/upstash"
+// import { getSentryIssues } from "@/lib/sentry"
+import { Suspense } from "react"
+import { Skeleton } from "@/components/ui/skeleton"
 
-export default function Home() {
+export const dynamic = "force-dynamic"
+
+function ServiceCard({
+  name,
+  status,
+  detail,
+}: {
+  name: string
+  status: "online" | "degraded" | "offline"
+  detail: string
+}) {
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
+    <Card>
+      <CardContent className="pt-6">
+        <div className="flex items-center justify-between">
+          <p className="text-sm font-medium">{name}</p>
+          <StatusBadge status={status} />
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
-      </main>
+        <p className="text-xs text-muted-foreground mt-2">{detail}</p>
+      </CardContent>
+    </Card>
+  )
+}
+
+async function ServiceStatusCards() {
+  const [supabaseHealth, logStats] = await Promise.all([
+    getSupabaseHealth(),
+    getLogStats(),
+  ])
+
+  const logDetail = logStats.totalLogs > 0
+    ? `${logStats.totalLogs.toLocaleString()} logs stored`
+    : "No logs synced yet"
+
+  return (
+    <div className="grid grid-cols-4 gap-4">
+      <ServiceCard
+        name="Supabase"
+        status={supabaseHealth.ok ? (supabaseHealth.latencyMs > 1000 ? "degraded" : "online") : "offline"}
+        detail={supabaseHealth.ok ? `${supabaseHealth.latencyMs}ms ping` : "Unreachable"}
+      />
+      <ServiceCard
+        name="Edge Fn Logs"
+        status={logStats.totalLogs > 0 ? "online" : "degraded"}
+        detail={logDetail}
+      />
+      {/* TODO: Uncomment when Upstash and Sentry are configured */}
+      <ServiceCard name="Redis" status="offline" detail="Not configured yet" />
+      <ServiceCard name="Sentry" status="offline" detail="Not configured yet" />
     </div>
-  );
+  )
+}
+
+async function FunctionLogsSection() {
+  const stats = await getFunctionLogsStats()
+
+  return (
+    <>
+      <div className="grid grid-cols-4 gap-4">
+        <KPICard label="Total Invocations" value={stats.totalInvocations} subLabel="Last 24 hours" />
+        <KPICard label="Error Count" value={stats.errorCount} subLabel="Last 24 hours" />
+        <KPICard label="Avg Duration" value={`${stats.avgDuration}ms`} subLabel="Last 24 hours" />
+        <KPICard label="Cache Miss Rate" value={`${stats.cacheMissRate}%`} subLabel="Last 24 hours" />
+      </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Functions Health</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {stats.perFunction.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No function logs in the last 24 hours.</p>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Function Name</TableHead>
+                  <TableHead className="text-right">Invocations</TableHead>
+                  <TableHead className="text-right">Error Rate</TableHead>
+                  <TableHead className="text-right">Avg Duration</TableHead>
+                  <TableHead className="text-right">Status</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {stats.perFunction.map((fn) => (
+                  <TableRow
+                    key={fn.name}
+                    className={fn.errorRate > 10 ? "bg-red-500/10" : ""}
+                  >
+                    <TableCell className="font-mono text-sm">{fn.name}</TableCell>
+                    <TableCell className="text-right">{fn.invocations}</TableCell>
+                    <TableCell className="text-right">{fn.errorRate}%</TableCell>
+                    <TableCell className="text-right">{fn.avgDuration}ms</TableCell>
+                    <TableCell className="text-right">
+                      <StatusBadge
+                        status={
+                          fn.errorRate > 10
+                            ? "offline"
+                            : fn.errorRate > 2
+                            ? "degraded"
+                            : "online"
+                        }
+                        label={
+                          fn.errorRate > 10
+                            ? "Critical"
+                            : fn.errorRate > 2
+                            ? "Warning"
+                            : "Healthy"
+                        }
+                      />
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
+        </CardContent>
+      </Card>
+    </>
+  )
+}
+
+function LoadingSkeleton() {
+  return (
+    <div className="space-y-6">
+      <div className="grid grid-cols-4 gap-4">
+        {Array.from({ length: 4 }).map((_, i) => (
+          <Card key={i}><CardContent className="pt-6"><Skeleton className="h-12 w-full" /></CardContent></Card>
+        ))}
+      </div>
+      <div className="grid grid-cols-4 gap-4">
+        {Array.from({ length: 4 }).map((_, i) => (
+          <Card key={i}><CardContent className="pt-6"><Skeleton className="h-12 w-full" /></CardContent></Card>
+        ))}
+      </div>
+      <Card><CardContent className="pt-6"><Skeleton className="h-48 w-full" /></CardContent></Card>
+    </div>
+  )
+}
+
+export default function SystemHealthPage() {
+  return (
+    <>
+      <TopBar title="System Health" />
+      <div className="p-6 space-y-6">
+        <Suspense fallback={<LoadingSkeleton />}>
+          <ServiceStatusCards />
+        </Suspense>
+        <Suspense fallback={
+          <div className="space-y-6">
+            <div className="grid grid-cols-4 gap-4">
+              {Array.from({ length: 4 }).map((_, i) => (
+                <Card key={i}><CardContent className="pt-6"><Skeleton className="h-12 w-full" /></CardContent></Card>
+              ))}
+            </div>
+            <Card><CardContent className="pt-6"><Skeleton className="h-48 w-full" /></CardContent></Card>
+          </div>
+        }>
+          <FunctionLogsSection />
+        </Suspense>
+      </div>
+    </>
+  )
 }
