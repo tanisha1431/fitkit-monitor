@@ -13,10 +13,13 @@ export async function getSupabaseHealth(): Promise<{ ok: boolean; latencyMs: num
 
 export async function getFunctionLogsStats() {
   const dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
+
   const { data } = await supabase
-    .from('function_logs')
+    .schema('logs' as never)
+    .from('edge_function_logs')
     .select('function_name, status, duration_ms, cache_hit')
-    .gte('created_at', dayAgo)
+    .gte('timestamp', dayAgo)
+    .limit(50000)
 
   if (!data || data.length === 0) {
     return {
@@ -28,23 +31,36 @@ export async function getFunctionLogsStats() {
     }
   }
 
-  const errorCount = data.filter(r => r.status === 'failed').length
-  const durations = data.map(r => r.duration_ms).filter(Boolean) as number[]
-  const avgDuration = durations.length > 0 ? Math.round(durations.reduce((a, b) => a + b, 0) / durations.length) : 0
+  type Row = {
+    function_name: string
+    status: string | null
+    duration_ms: number | null
+    cache_hit: boolean | null
+  }
+  const rows = data as Row[]
 
-  const cacheRows = data.filter(r => r.cache_hit !== null)
+  const errorCount = rows.filter(r => r.status === 'failed' || r.status === 'boot_failure').length
+  const durations = rows.map(r => r.duration_ms).filter((d): d is number => typeof d === 'number')
+  const avgDuration = durations.length > 0
+    ? Math.round(durations.reduce((a, b) => a + b, 0) / durations.length)
+    : 0
+
+  const cacheRows = rows.filter(r => r.cache_hit !== null)
   const cacheMisses = cacheRows.filter(r => !r.cache_hit).length
-  const cacheMissRate = cacheRows.length > 0 ? Math.round((cacheMisses / cacheRows.length) * 100) : 0
+  const cacheMissRate = cacheRows.length > 0
+    ? Math.round((cacheMisses / cacheRows.length) * 100)
+    : 0
 
-  // Per function breakdown
   const byFunction: Record<string, { total: number; errors: number; durations: number[] }> = {}
-  data.forEach(row => {
-    const fn = row.function_name
-    if (!byFunction[fn]) byFunction[fn] = { total: 0, errors: 0, durations: [] }
-    byFunction[fn].total++
-    if (row.status === 'failed') byFunction[fn].errors++
-    if (row.duration_ms) byFunction[fn].durations.push(row.duration_ms)
-  })
+  for (const row of rows) {
+    if (!byFunction[row.function_name]) {
+      byFunction[row.function_name] = { total: 0, errors: 0, durations: [] }
+    }
+    const e = byFunction[row.function_name]
+    e.total++
+    if (row.status === 'failed' || row.status === 'boot_failure') e.errors++
+    if (typeof row.duration_ms === 'number') e.durations.push(row.duration_ms)
+  }
 
   const perFunction = Object.entries(byFunction).map(([name, stats]) => ({
     name,
@@ -56,7 +72,7 @@ export async function getFunctionLogsStats() {
   })).sort((a, b) => b.invocations - a.invocations)
 
   return {
-    totalInvocations: data.length,
+    totalInvocations: rows.length,
     errorCount,
     avgDuration,
     cacheMissRate,

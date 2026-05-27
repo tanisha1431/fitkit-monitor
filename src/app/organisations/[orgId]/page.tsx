@@ -6,10 +6,12 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
 import { getOrgDetail } from "@/lib/queries/organisations"
+import { getOrgFunctionActivity } from "@/lib/queries/functions"
 import { Suspense } from "react"
 import Link from "next/link"
 import { notFound } from "next/navigation"
 import { ExternalLink } from "lucide-react"
+import { StatusBadge } from "@/components/shared/StatusBadge"
 
 export const dynamic = "force-dynamic"
 
@@ -39,6 +41,80 @@ const consentStatusConfig: Record<string, { label: string; variant: "default" | 
   pending: { label: "Pending", variant: "secondary" },
   bounced: { label: "Bounced", variant: "destructive" },
   none: { label: "No Request", variant: "outline" },
+}
+
+async function OrgFunctionActivitySection({ orgId }: { orgId: string }) {
+  const activity = await getOrgFunctionActivity(orgId, 24 * 7)
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Edge Function Activity — Last 7 Days</CardTitle>
+      </CardHeader>
+      <CardContent>
+        {activity.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            No edge function invocations tagged to this org in the last 7 days.
+          </p>
+        ) : (
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Function</TableHead>
+                <TableHead className="text-right">Invocations</TableHead>
+                <TableHead className="text-right">Errors</TableHead>
+                <TableHead className="text-right">Error Rate</TableHead>
+                <TableHead className="text-right">Avg ms</TableHead>
+                <TableHead>Last Seen</TableHead>
+                <TableHead>Status</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {activity.map((row) => (
+                <TableRow key={row.function_name}>
+                  <TableCell>
+                    <Link
+                      href={`/functions/${encodeURIComponent(row.function_name)}`}
+                      className="font-mono text-xs hover:underline hover:text-emerald-400"
+                    >
+                      {row.function_name}
+                    </Link>
+                  </TableCell>
+                  <TableCell className="text-right tabular-nums">{row.invocations}</TableCell>
+                  <TableCell className="text-right tabular-nums">{row.errors}</TableCell>
+                  <TableCell className="text-right tabular-nums">{row.errorRate}%</TableCell>
+                  <TableCell className="text-right tabular-nums">
+                    {row.avgDuration || "—"}
+                  </TableCell>
+                  <TableCell className="text-xs text-muted-foreground">
+                    {formatTimeAgo(row.lastSeen)}
+                  </TableCell>
+                  <TableCell>
+                    <StatusBadge
+                      status={
+                        row.errorRate > 10
+                          ? "offline"
+                          : row.errorRate > 2
+                          ? "degraded"
+                          : "online"
+                      }
+                      label={
+                        row.errorRate > 10
+                          ? "Critical"
+                          : row.errorRate > 2
+                          ? "Warning"
+                          : "Healthy"
+                      }
+                    />
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        )}
+      </CardContent>
+    </Card>
+  )
 }
 
 async function OrgDetailContent({
@@ -125,6 +201,11 @@ async function OrgDetailContent({
           )}
         </CardContent>
       </Card>
+
+      {/* Edge function activity for this org */}
+      <Suspense fallback={null}>
+        <OrgFunctionActivitySection orgId={orgId} />
+      </Suspense>
 
       {/* Consent Funnel */}
       <Card>

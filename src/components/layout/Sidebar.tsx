@@ -12,6 +12,7 @@ import {
   AlertTriangle,
   Database,
   ScrollText,
+  Search,
 } from "lucide-react"
 
 const navItems = [
@@ -22,6 +23,7 @@ const navItems = [
   { href: "/functions", label: "Edge Functions", icon: Zap },
   { href: "/errors", label: "Errors", icon: AlertTriangle },
   { href: "/cache", label: "Cache Monitor", icon: Database },
+  { href: "/lookup", label: "Lookup", icon: Search },
   { href: "/audit", label: "Audit Log", icon: ScrollText },
 ]
 
