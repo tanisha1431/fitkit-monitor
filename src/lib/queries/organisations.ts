@@ -308,6 +308,12 @@ export async function getOrgDetail(
     (testConfigs ?? []).map(c => [c.id as string, (c.display_name as string) ?? 'Untitled test']),
   )
 
+  // Assigned tests in a stable, name-sorted order, so each student's done/pending
+  // lists read consistently.
+  const assignedTestsOrdered = assignedTests
+    .map(id => ({ id, name: testNameById.get(id) ?? 'Untitled test' }))
+    .sort((a, b) => a.name.localeCompare(b.name))
+
   // Per-user set of *assigned* tests completed, plus last activity — built once so
   // the student list, completion summary, and per-test breakdown all reuse it.
   const completedByUser = new Map<string, Set<string>>()
@@ -331,7 +337,10 @@ export async function getOrgDetail(
   }
 
   const studentList = users.map(user => {
-    const testsDone = completedByUser.get(user.id)?.size ?? 0
+    const doneSet = completedByUser.get(user.id)
+    const testsDone = doneSet?.size ?? 0
+    const doneTests = assignedTestsOrdered.filter(t => doneSet?.has(t.id)).map(t => t.name)
+    const pendingTests = assignedTestsOrdered.filter(t => !doneSet?.has(t.id)).map(t => t.name)
 
     const userConsent = consentByUser.get(user.id)
     let consentStatus: 'approved' | 'rejected' | 'pending' | 'bounced' | 'none' = 'none'
@@ -354,6 +363,8 @@ export async function getOrgDetail(
       testsDone,
       totalTests,
       completionStatus,
+      doneTests,
+      pendingTests,
       lastActive: lastActiveByUser.get(user.id) ?? null,
       consentStatus,
     }

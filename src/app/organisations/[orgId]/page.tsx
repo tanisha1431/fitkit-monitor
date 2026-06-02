@@ -431,6 +431,7 @@ async function OrgDetailContent({
                     <TableHead>Gender</TableHead>
                     <TableHead>Roll No</TableHead>
                     <TableHead className="text-right">Tests Done</TableHead>
+                    <TableHead>Tests Remaining</TableHead>
                     <TableHead>Last Active</TableHead>
                     <TableHead>Consent</TableHead>
                     <TableHead>Report</TableHead>
@@ -477,6 +478,27 @@ async function OrgDetailContent({
                               {student.testsDone}/{student.totalTests}
                             </span>
                           </div>
+                        </TableCell>
+                        <TableCell className="max-w-xs">
+                          {student.completionStatus === "complete" ? (
+                            <span className="text-xs text-emerald-400">All done</span>
+                          ) : student.completionStatus === "none" ? (
+                            <span className="text-xs text-muted-foreground">
+                              Not started — all {student.totalTests} pending
+                            </span>
+                          ) : (
+                            <div className="flex flex-wrap gap-1">
+                              {student.pendingTests.map((name) => (
+                                <Badge
+                                  key={name}
+                                  variant="outline"
+                                  className="border-amber-500/40 text-amber-300 text-[10px] font-normal"
+                                >
+                                  {name}
+                                </Badge>
+                              ))}
+                            </div>
+                          )}
                         </TableCell>
                         <TableCell className="text-sm text-muted-foreground">
                           {formatTimeAgo(student.lastActive)}

@@ -48,6 +48,7 @@ export async function GET(
     "Tests Done",
     "Total Tests",
     "Completion",
+    "Tests Remaining",
     "Last Active",
     "Consent",
   ]
@@ -62,6 +63,7 @@ export async function GET(
       s.testsDone,
       s.totalTests,
       s.completionStatus,
+      s.pendingTests.join("; "),
       s.lastActive ?? "",
       consentLabels[s.consentStatus] ?? s.consentStatus,
     ]
