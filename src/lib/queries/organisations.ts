@@ -135,6 +135,44 @@ export async function getOrgList(): Promise<OrgListItem[]> {
 export interface StudentFilters {
   std?: string
   div?: string
+  status?: 'complete' | 'partial' | 'none'
+}
+
+// Supabase encodes .in() filters into the request URL. A few thousand UUIDs blow
+// past the URL length limit and the request silently returns zero rows (no error),
+// which made every student in large orgs show 0 tests done. Chunk the ids — and
+// page within each chunk past the 1000-row cap — to fetch them reliably.
+async function fetchByUserIds<T>(
+  table: string,
+  columns: string,
+  userIds: string[],
+): Promise<T[]> {
+  const idChunkSize = 150
+  const pageSize = 1000
+  const chunks: string[][] = []
+  for (let i = 0; i < userIds.length; i += idChunkSize) {
+    chunks.push(userIds.slice(i, i + idChunkSize))
+  }
+
+  const perChunk = await Promise.all(
+    chunks.map(async chunk => {
+      const rows: T[] = []
+      for (let page = 0; ; page++) {
+        const from = page * pageSize
+        const { data, error } = await supabase
+          .from(table)
+          .select(columns)
+          .in('user_id', chunk)
+          .range(from, from + pageSize - 1)
+        if (error) throw error
+        if (!data || data.length === 0) break
+        rows.push(...(data as T[]))
+        if (data.length < pageSize) break
+      }
+      return rows
+    }),
+  )
+  return perChunk.flat()
 }
 
 export async function getOrgDetail(
@@ -158,38 +196,77 @@ export async function getOrgDetail(
     .eq('organization_id', orgId)
     .order('full_name')
 
-  const { data: users } = await supabase
-    .from('users')
-    .select('id, name, report_access_key, is_consent_approved, guardian_email, gender, std, div, roll_no, created_at')
-    .eq('organization_id', orgId)
-    .order('name')
+  // Paginate: the users query is otherwise capped at 1000 rows, hiding students
+  // in large orgs (e.g. Udgam has 2000+).
+  const userColumns =
+    'id, name, report_access_key, is_consent_approved, guardian_email, gender, std, div, roll_no, created_at'
+  type OrgUserRow = {
+    id: string
+    name: string | null
+    report_access_key: string | null
+    is_consent_approved: boolean | null
+    guardian_email: string | null
+    gender: string | null
+    std: string | number | null
+    div: string | number | null
+    roll_no: string | number | null
+    created_at: string | null
+  }
+  const users: OrgUserRow[] = []
+  for (let page = 0; ; page++) {
+    const from = page * 1000
+    const { data, error } = await supabase
+      .from('users')
+      .select(userColumns)
+      .eq('organization_id', orgId)
+      .order('name')
+      .range(from, from + 999)
+    if (error) throw error
+    if (!data || data.length === 0) break
+    users.push(...(data as unknown as OrgUserRow[]))
+    if (data.length < 1000) break
+  }
 
-  const userIds = users?.map(u => u.id) ?? []
+  const userIds = users.map(u => u.id)
 
-  // Get scores for these users
-  const { data: scores } = userIds.length > 0
-    ? await supabase
-        .from('scores_overview')
-        .select('user_id, test_id, test_config_id, created_at')
-        .in('user_id', userIds)
-    : { data: [] }
+  type ScoreRow = {
+    user_id: string | null
+    test_id: string | null
+    test_config_id: string | null
+    created_at: string | null
+  }
+  type ConsentRow = Record<string, unknown> & {
+    user_id: string | null
+    approved_at: string | null
+    rejected_at: string | null
+    email_status: string | null
+  }
+
+  // Scores and consents are independent, so fetch them concurrently. Both are
+  // chunked (see fetchByUserIds) because a single .in() over thousands of ids
+  // overflows the request URL and silently returns nothing.
+  const [scores, consents] = userIds.length > 0
+    ? await Promise.all([
+        fetchByUserIds<ScoreRow>(
+          'scores_overview',
+          'user_id, test_id, test_config_id, created_at',
+          userIds,
+        ),
+        fetchByUserIds<ConsentRow>('consent_requests', '*', userIds),
+      ])
+    : [[] as ScoreRow[], [] as ConsentRow[]]
 
   // Activity counts
   const now = new Date()
   const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString()
   const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
 
-  const todayScores = scores?.filter(s => s.created_at && s.created_at >= todayStart) ?? []
-  const weekScores = scores?.filter(s => s.created_at && s.created_at >= weekAgo) ?? []
+  const todayScores = scores.filter(s => s.created_at && s.created_at >= todayStart)
+  const weekScores = scores.filter(s => s.created_at && s.created_at >= weekAgo)
 
   const studentsToday = new Set(todayScores.map(s => s.user_id)).size
   const studentsWeek = new Set(weekScores.map(s => s.user_id)).size
-  const studentsSeason = new Set((scores ?? []).map(s => s.user_id)).size
-
-  // Consent funnel
-  const { data: consents } = userIds.length > 0
-    ? await supabase.from('consent_requests').select('*').in('user_id', userIds)
-    : { data: [] }
+  const studentsSeason = new Set(scores.map(s => s.user_id)).size
 
   const consentFunnel = {
     sent: consents?.length ?? 0,
@@ -216,24 +293,55 @@ export async function getOrgDetail(
 
     assignedTestConfigIds = (suiteTests ?? []).map(t => t.test_config_id).filter(Boolean) as string[]
   }
-  const totalTests = new Set(assignedTestConfigIds).size
+  const assignedTests = Array.from(new Set(assignedTestConfigIds))
+  const totalTests = assignedTests.length
+  const assignedSet = new Set(assignedTests)
 
-  const studentList = (users ?? []).map(user => {
-    const userScores = scores?.filter(s => s.user_id === user.id) ?? []
-    const assignedSet = new Set(assignedTestConfigIds)
-    const uniqueTests = new Set(
-      userScores.map(s => s.test_config_id).filter(id => assignedSet.has(id))
-    ).size
-    const lastScore = userScores.sort((a, b) =>
-      new Date(b.created_at!).getTime() - new Date(a.created_at!).getTime()
-    )[0]
+  // Human-readable test names for the per-test breakdown (the one extra query).
+  const { data: testConfigs } = assignedTests.length > 0
+    ? await supabase
+        .from('test_configurations')
+        .select('id, display_name')
+        .in('id', assignedTests)
+    : { data: [] }
+  const testNameById = new Map<string, string>(
+    (testConfigs ?? []).map(c => [c.id as string, (c.display_name as string) ?? 'Untitled test']),
+  )
 
-    const userConsent = consents?.find(c => c.user_id === user.id)
+  // Per-user set of *assigned* tests completed, plus last activity — built once so
+  // the student list, completion summary, and per-test breakdown all reuse it.
+  const completedByUser = new Map<string, Set<string>>()
+  const lastActiveByUser = new Map<string, string>()
+  for (const s of scores) {
+    if (!s.user_id) continue
+    if (s.test_config_id && assignedSet.has(s.test_config_id)) {
+      let set = completedByUser.get(s.user_id)
+      if (!set) completedByUser.set(s.user_id, (set = new Set()))
+      set.add(s.test_config_id)
+    }
+    if (s.created_at) {
+      const prev = lastActiveByUser.get(s.user_id)
+      if (!prev || s.created_at > prev) lastActiveByUser.set(s.user_id, s.created_at)
+    }
+  }
+
+  const consentByUser = new Map<string, (typeof consents)[number]>()
+  for (const c of consents) {
+    if (c.user_id && !consentByUser.has(c.user_id)) consentByUser.set(c.user_id, c)
+  }
+
+  const studentList = users.map(user => {
+    const testsDone = completedByUser.get(user.id)?.size ?? 0
+
+    const userConsent = consentByUser.get(user.id)
     let consentStatus: 'approved' | 'rejected' | 'pending' | 'bounced' | 'none' = 'none'
     if (userConsent?.approved_at) consentStatus = 'approved'
     else if (userConsent?.rejected_at) consentStatus = 'rejected'
     else if (userConsent?.email_status === 'bounced') consentStatus = 'bounced'
     else if (userConsent) consentStatus = 'pending'
+
+    const completionStatus: 'complete' | 'partial' | 'none' =
+      totalTests > 0 && testsDone >= totalTests ? 'complete' : testsDone > 0 ? 'partial' : 'none'
 
     return {
       id: user.id,
@@ -243,9 +351,10 @@ export async function getOrgDetail(
       std: user.std,
       div: user.div,
       rollNo: user.roll_no,
-      testsDone: uniqueTests,
+      testsDone,
       totalTests,
-      lastActive: lastScore?.created_at ?? null,
+      completionStatus,
+      lastActive: lastActiveByUser.get(user.id) ?? null,
       consentStatus,
     }
   })
@@ -270,8 +379,53 @@ export async function getOrgDetail(
   const filteredStudentList = studentList.filter(s => {
     if (filters.std && String(s.std ?? "") !== filters.std) return false
     if (filters.div && String(s.div ?? "") !== filters.div) return false
+    if (filters.status && s.completionStatus !== filters.status) return false
     return true
   })
+
+  // Completion summary + per-test breakdown reflect the current filters, so the
+  // headline numbers always match the student list below them.
+  const completionSummary = {
+    total: filteredStudentList.length,
+    complete: filteredStudentList.filter(s => s.completionStatus === 'complete').length,
+    partial: filteredStudentList.filter(s => s.completionStatus === 'partial').length,
+    none: filteredStudentList.filter(s => s.completionStatus === 'none').length,
+  }
+
+  const filteredUserIds = new Set(filteredStudentList.map(s => s.id))
+  const perTest = assignedTests
+    .map(testId => {
+      let completed = 0
+      for (const [uid, set] of completedByUser) {
+        if (filteredUserIds.has(uid) && set.has(testId)) completed++
+      }
+      return {
+        id: testId,
+        name: testNameById.get(testId) ?? 'Untitled test',
+        completed,
+        total: completionSummary.total,
+      }
+    })
+    .sort((a, b) => b.completed - a.completed)
+
+  // Per-class breakdown spans every class (ignores the class/section filter) so it
+  // doubles as an at-a-glance overview of where each cohort stands.
+  const perClassMap = new Map<string, { total: number; complete: number }>()
+  for (const s of studentList) {
+    const cls = s.std !== null && s.std !== undefined && String(s.std) !== "" ? String(s.std) : "—"
+    const entry = perClassMap.get(cls) ?? { total: 0, complete: 0 }
+    entry.total++
+    if (s.completionStatus === 'complete') entry.complete++
+    perClassMap.set(cls, entry)
+  }
+  const perClass = Array.from(perClassMap.entries())
+    .map(([className, v]) => ({ className, total: v.total, complete: v.complete }))
+    .sort((a, b) => {
+      const na = Number(a.className)
+      const nb = Number(b.className)
+      if (!Number.isNaN(na) && !Number.isNaN(nb)) return na - nb
+      return a.className.localeCompare(b.className)
+    })
 
   const totalStudentCount = filteredStudentList.length
   const totalStudentPages = Math.max(1, Math.ceil(totalStudentCount / studentPageSize))
@@ -281,11 +435,14 @@ export async function getOrgDetail(
   return {
     org,
     teachers: teachers ?? [],
-    totalStudents: users?.length ?? 0,
+    totalStudents: users.length,
     studentsToday,
     studentsWeek,
     studentsSeason,
     consentFunnel,
+    completionSummary,
+    perTest,
+    perClass,
     studentList: paginatedStudentList,
     totalStudentCount,
     totalStudentPages,

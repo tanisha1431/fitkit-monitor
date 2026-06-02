@@ -10,19 +10,30 @@ import { getOrgFunctionActivity } from "@/lib/queries/functions"
 import { Suspense } from "react"
 import Link from "next/link"
 import { notFound } from "next/navigation"
-import { ExternalLink } from "lucide-react"
+import { ExternalLink, Download } from "lucide-react"
 import { StatusBadge } from "@/components/shared/StatusBadge"
 
 export const dynamic = "force-dynamic"
 
 const REPORTS_BASE_URL = process.env.FITKIT_REPORTS_URL
 
-function buildStudentPageHref(orgId: string, page: number, std?: string, div?: string) {
+function buildStudentPageHref(
+  orgId: string,
+  page: number,
+  std?: string,
+  div?: string,
+  status?: string,
+) {
   const params = new URLSearchParams()
   params.set("page", String(page))
   if (std) params.set("std", std)
   if (div) params.set("div", div)
+  if (status) params.set("status", status)
   return `/organisations/${orgId}?${params.toString()}`
+}
+
+function pct(n: number, d: number) {
+  return d > 0 ? Math.round((n / d) * 100) : 0
 }
 
 function formatTimeAgo(dateStr: string | null) {
@@ -122,13 +133,19 @@ async function OrgDetailContent({
   studentPage,
   stdFilter,
   divFilter,
+  statusFilter,
 }: {
   orgId: string
   studentPage: number
   stdFilter?: string
   divFilter?: string
+  statusFilter?: "complete" | "partial" | "none"
 }) {
-  const detail = await getOrgDetail(orgId, studentPage, 25, { std: stdFilter, div: divFilter })
+  const detail = await getOrgDetail(orgId, studentPage, 25, {
+    std: stdFilter,
+    div: divFilter,
+    status: statusFilter,
+  })
   if (!detail) notFound()
 
   const {
@@ -139,6 +156,9 @@ async function OrgDetailContent({
     studentsWeek,
     studentsSeason,
     consentFunnel,
+    completionSummary,
+    perTest,
+    perClass,
     studentList,
     totalStudentCount,
     totalStudentPages,
@@ -146,10 +166,20 @@ async function OrgDetailContent({
     availableSections,
   } = detail
 
-  const filtersActive = Boolean(stdFilter || divFilter)
+  const filtersActive = Boolean(stdFilter || divFilter || statusFilter)
   const studentsHeading = filtersActive
     ? `Students (${totalStudentCount} filtered)`
     : `Students (${totalStudentCount})`
+
+  const exportParams = new URLSearchParams()
+  if (stdFilter) exportParams.set("std", stdFilter)
+  if (divFilter) exportParams.set("div", divFilter)
+  if (statusFilter) exportParams.set("status", statusFilter)
+  const exportHref = `/organisations/${orgId}/export${
+    exportParams.toString() ? `?${exportParams.toString()}` : ""
+  }`
+
+  const summaryTotal = completionSummary.total
 
   return (
     <div className="space-y-6">
@@ -159,11 +189,142 @@ async function OrgDetailContent({
         <span className="text-sm text-muted-foreground">{totalStudents} students</span>
       </div>
 
+      {/* Test completion summary */}
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between gap-4 space-y-0">
+          <CardTitle className="text-base">Test Completion</CardTitle>
+          <span className="text-sm text-muted-foreground">
+            {summaryTotal.toLocaleString()} student{summaryTotal === 1 ? "" : "s"}
+            {filtersActive ? " (filtered)" : ""}
+          </span>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="flex h-3 w-full overflow-hidden rounded-full bg-muted">
+            <div
+              className="bg-emerald-500"
+              style={{ width: `${pct(completionSummary.complete, summaryTotal)}%` }}
+            />
+            <div
+              className="bg-amber-500"
+              style={{ width: `${pct(completionSummary.partial, summaryTotal)}%` }}
+            />
+          </div>
+          <div className="flex flex-wrap items-center gap-x-6 gap-y-1 text-sm">
+            <span className="flex items-center gap-2">
+              <span className="h-2.5 w-2.5 rounded-full bg-emerald-500" />
+              Fully tested{" "}
+              <span className="font-semibold">{completionSummary.complete.toLocaleString()}</span>
+              <span className="text-muted-foreground">
+                ({pct(completionSummary.complete, summaryTotal)}%)
+              </span>
+            </span>
+            <span className="flex items-center gap-2">
+              <span className="h-2.5 w-2.5 rounded-full bg-amber-500" />
+              In progress{" "}
+              <span className="font-semibold">{completionSummary.partial.toLocaleString()}</span>
+              <span className="text-muted-foreground">
+                ({pct(completionSummary.partial, summaryTotal)}%)
+              </span>
+            </span>
+            <span className="flex items-center gap-2">
+              <span className="h-2.5 w-2.5 rounded-full bg-muted-foreground/40" />
+              Not started{" "}
+              <span className="font-semibold">{completionSummary.none.toLocaleString()}</span>
+              <span className="text-muted-foreground">
+                ({pct(completionSummary.none, summaryTotal)}%)
+              </span>
+            </span>
+          </div>
+        </CardContent>
+      </Card>
+
       <div className="grid grid-cols-3 gap-4">
-        <KPICard label="Students Tested Today" value={studentsToday} />
-        <KPICard label="Students Tested This Week" value={studentsWeek} />
-        <KPICard label="Students Tested This Season" value={studentsSeason} />
+        <KPICard
+          label="Tested Today"
+          value={`${studentsToday.toLocaleString()} / ${totalStudents.toLocaleString()}`}
+          subLabel={`${pct(studentsToday, totalStudents)}% of students`}
+        />
+        <KPICard
+          label="Tested This Week"
+          value={`${studentsWeek.toLocaleString()} / ${totalStudents.toLocaleString()}`}
+          subLabel={`${pct(studentsWeek, totalStudents)}% of students`}
+        />
+        <KPICard
+          label="Tested All-time"
+          value={`${studentsSeason.toLocaleString()} / ${totalStudents.toLocaleString()}`}
+          subLabel={`${pct(studentsSeason, totalStudents)}% of students`}
+        />
       </div>
+
+      {/* Per-test breakdown */}
+      {perTest.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Completion by Test</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {perTest.map((test) => (
+              <div key={test.id} className="flex items-center gap-4">
+                <span className="w-48 shrink-0 truncate text-sm" title={test.name}>
+                  {test.name}
+                </span>
+                <div className="h-2.5 flex-1 overflow-hidden rounded-full bg-muted">
+                  <div
+                    className="h-full bg-emerald-500"
+                    style={{ width: `${pct(test.completed, test.total)}%` }}
+                  />
+                </div>
+                <span className="w-32 shrink-0 text-right text-sm tabular-nums text-muted-foreground">
+                  {test.completed.toLocaleString()} / {test.total.toLocaleString()} (
+                  {pct(test.completed, test.total)}%)
+                </span>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Per-class breakdown */}
+      {perClass.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Completion by Class</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Class</TableHead>
+                  <TableHead className="text-right">Students</TableHead>
+                  <TableHead className="text-right">Fully Tested</TableHead>
+                  <TableHead className="w-1/3">Progress</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {perClass.map((row) => (
+                  <TableRow key={row.className}>
+                    <TableCell className="font-medium">{row.className}</TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      {row.total.toLocaleString()}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      {row.complete.toLocaleString()} ({pct(row.complete, row.total)}%)
+                    </TableCell>
+                    <TableCell>
+                      <div className="h-2.5 w-full overflow-hidden rounded-full bg-muted">
+                        <div
+                          className="h-full bg-emerald-500"
+                          style={{ width: `${pct(row.complete, row.total)}%` }}
+                        />
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Teachers */}
       <Card>
@@ -237,12 +398,21 @@ async function OrgDetailContent({
 
       {/* Students */}
       <Card>
-        <CardHeader className="flex flex-row items-center justify-between gap-4 space-y-0">
+        <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-4 space-y-0">
           <CardTitle className="text-base">{studentsHeading}</CardTitle>
-          <StudentFilters
-            availableClasses={availableClasses}
-            availableSections={availableSections}
-          />
+          <div className="flex flex-wrap items-center gap-3">
+            <StudentFilters
+              availableClasses={availableClasses}
+              availableSections={availableSections}
+            />
+            <a
+              href={exportHref}
+              className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-input px-3 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+            >
+              <Download className="h-3.5 w-3.5" />
+              Export CSV
+            </a>
+          </div>
         </CardHeader>
         <CardContent>
           {studentList.length === 0 && studentPage === 1 ? (
@@ -289,8 +459,24 @@ async function OrgDetailContent({
                         <TableCell className="text-sm text-muted-foreground">{classLabel}</TableCell>
                         <TableCell className="text-sm text-muted-foreground">{student.gender || "—"}</TableCell>
                         <TableCell className="text-sm text-muted-foreground">{student.rollNo ?? "—"}</TableCell>
-                        <TableCell className="text-right">
-                          {student.testsDone}/{student.totalTests}
+                        <TableCell>
+                          <div className="flex items-center justify-end gap-2">
+                            <div className="h-1.5 w-16 overflow-hidden rounded-full bg-muted">
+                              <div
+                                className={`h-full ${
+                                  student.completionStatus === "complete"
+                                    ? "bg-emerald-500"
+                                    : student.completionStatus === "partial"
+                                    ? "bg-amber-500"
+                                    : "bg-transparent"
+                                }`}
+                                style={{ width: `${pct(student.testsDone, student.totalTests)}%` }}
+                              />
+                            </div>
+                            <span className="w-8 text-right text-sm tabular-nums">
+                              {student.testsDone}/{student.totalTests}
+                            </span>
+                          </div>
                         </TableCell>
                         <TableCell className="text-sm text-muted-foreground">
                           {formatTimeAgo(student.lastActive)}
@@ -323,7 +509,7 @@ async function OrgDetailContent({
                   <div className="flex gap-2">
                     {studentPage > 1 && (
                       <Link
-                        href={buildStudentPageHref(orgId, studentPage - 1, stdFilter, divFilter)}
+                        href={buildStudentPageHref(orgId, studentPage - 1, stdFilter, divFilter, statusFilter)}
                         className="px-3 py-1.5 text-sm rounded-md border border-border hover:bg-accent"
                       >
                         Previous
@@ -331,7 +517,7 @@ async function OrgDetailContent({
                     )}
                     {studentPage < totalStudentPages && (
                       <Link
-                        href={buildStudentPageHref(orgId, studentPage + 1, stdFilter, divFilter)}
+                        href={buildStudentPageHref(orgId, studentPage + 1, stdFilter, divFilter, statusFilter)}
                         className="px-3 py-1.5 text-sm rounded-md border border-border hover:bg-accent"
                       >
                         Next
@@ -353,13 +539,17 @@ export default async function OrgDetailPage({
   searchParams,
 }: {
   params: Promise<{ orgId: string }>
-  searchParams: Promise<{ page?: string; std?: string; div?: string }>
+  searchParams: Promise<{ page?: string; std?: string; div?: string; status?: string }>
 }) {
   const { orgId } = await params
-  const { page: pageParam, std: stdParam, div: divParam } = await searchParams
+  const { page: pageParam, std: stdParam, div: divParam, status: statusParam } = await searchParams
   const studentPage = Math.max(1, parseInt(pageParam ?? "1", 10) || 1)
   const stdFilter = stdParam?.trim() || undefined
   const divFilter = divParam?.trim() || undefined
+  const statusFilter =
+    statusParam === "complete" || statusParam === "partial" || statusParam === "none"
+      ? statusParam
+      : undefined
 
   return (
     <>
@@ -390,6 +580,7 @@ export default async function OrgDetailPage({
             studentPage={studentPage}
             stdFilter={stdFilter}
             divFilter={divFilter}
+            statusFilter={statusFilter}
           />
         </Suspense>
       </div>
