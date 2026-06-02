@@ -12,88 +12,124 @@ export interface OrgListItem {
   status: 'active' | 'low_activity' | 'inactive'
 }
 
+// PostgREST caps each request at 1000 rows. Get the total count once, then fetch
+// every page concurrently so aggregates are computed over all rows without paying
+// for dozens of sequential round trips.
+async function fetchAllRows<T>(
+  build: () => ReturnType<typeof supabase.from>,
+  columns: string,
+): Promise<T[]> {
+  const pageSize = 1000
+  const { count, error: countError } = await build()
+    .select(columns, { count: 'exact', head: true })
+  if (countError) throw countError
+  if (!count) return []
+
+  const pageCount = Math.ceil(count / pageSize)
+  const pages = await Promise.all(
+    Array.from({ length: pageCount }, (_, page) => {
+      const from = page * pageSize
+      return build()
+        .select(columns)
+        .range(from, from + pageSize - 1)
+        .then(({ data, error }) => {
+          if (error) throw error
+          return (data ?? []) as T[]
+        })
+    }),
+  )
+  return pages.flat()
+}
+
 export async function getOrgList(): Promise<OrgListItem[]> {
   const { data: orgs } = await supabase
     .from('organizations')
     .select('id, name, type')
     .order('name')
 
-  if (!orgs) return []
+  if (!orgs || orgs.length === 0) return []
 
-  const results: OrgListItem[] = []
+  // Bulk-fetch each table once, then aggregate in memory. Previously this looped
+  // per-org running ~6 queries each (including a full consent_requests scan every
+  // iteration), which took 13-18s and broke the RSC stream ("Connection closed").
+  const [users, scores, consents] = await Promise.all([
+    fetchAllRows<{ id: string; organization_id: string | null }>(
+      () => supabase.from('users'),
+      'id, organization_id',
+    ),
+    fetchAllRows<{ user_id: string | null; created_at: string | null }>(
+      () => supabase.from('scores_overview'),
+      'user_id, created_at',
+    ),
+    fetchAllRows<{ user_id: string | null; approved_at: string | null }>(
+      () => supabase.from('consent_requests'),
+      'user_id, approved_at',
+    ),
+  ])
 
-  for (const org of orgs) {
-    const [usersRes, scoresRes, consentRes] = await Promise.all([
-      supabase.from('users').select('id', { count: 'exact', head: true }).eq('organization_id', org.id),
-      supabase.from('scores_overview').select('user_id, created_at').eq('user_id', org.id), // need to join through users
-      supabase.from('consent_requests').select('user_id, approved_at')
-    ])
+  // user -> org lookup, and per-org student counts
+  const userToOrg = new Map<string, string>()
+  const totalByOrg = new Map<string, number>()
+  for (const u of users) {
+    if (!u.organization_id) continue
+    userToOrg.set(u.id, u.organization_id)
+    totalByOrg.set(u.organization_id, (totalByOrg.get(u.organization_id) ?? 0) + 1)
+  }
 
-    // Get users for this org
-    const { data: orgUsers } = await supabase
-      .from('users')
-      .select('id')
-      .eq('organization_id', org.id)
-
-    const userIds = orgUsers?.map(u => u.id) ?? []
-    const totalStudents = userIds.length
-
-    // Get tested students
-    let testedStudents = 0
-    let lastActivity: string | null = null
-    if (userIds.length > 0) {
-      const { data: scores } = await supabase
-        .from('scores_overview')
-        .select('user_id, created_at')
-        .in('user_id', userIds)
-        .order('created_at', { ascending: false })
-        .limit(1000)
-
-      if (scores && scores.length > 0) {
-        testedStudents = new Set(scores.map(s => s.user_id)).size
-        lastActivity = scores[0].created_at
-      }
-
-      // Consent rate
-      const { data: consents } = await supabase
-        .from('consent_requests')
-        .select('approved_at')
-        .in('user_id', userIds)
-
-      const approvedCount = consents?.filter(c => c.approved_at).length ?? 0
-      const totalConsents = consents?.length ?? 0
-
-      const now = Date.now()
-      const lastActivityTime = lastActivity ? new Date(lastActivity).getTime() : 0
-      const daysSinceActivity = lastActivity ? (now - lastActivityTime) / (1000 * 60 * 60 * 24) : Infinity
-
-      results.push({
-        id: org.id,
-        name: org.name,
-        type: org.type,
-        totalStudents,
-        testedStudents,
-        testedPercent: totalStudents > 0 ? Math.round((testedStudents / totalStudents) * 100) : 0,
-        lastActivity,
-        consentRate: totalConsents > 0 ? Math.round((approvedCount / totalConsents) * 100) : 0,
-        status: daysSinceActivity <= 7 ? 'active' : daysSinceActivity <= 30 ? 'low_activity' : 'inactive',
-      })
-    } else {
-      results.push({
-        id: org.id,
-        name: org.name,
-        type: org.type,
-        totalStudents: 0,
-        testedStudents: 0,
-        testedPercent: 0,
-        lastActivity: null,
-        consentRate: 0,
-        status: 'inactive',
-      })
+  // tested students (distinct users with a score) and last activity per org
+  const testedByOrg = new Map<string, Set<string>>()
+  const lastActivityByOrg = new Map<string, string>()
+  for (const s of scores) {
+    if (!s.user_id) continue
+    const orgId = userToOrg.get(s.user_id)
+    if (!orgId) continue
+    let set = testedByOrg.get(orgId)
+    if (!set) testedByOrg.set(orgId, (set = new Set()))
+    set.add(s.user_id)
+    if (s.created_at) {
+      const prev = lastActivityByOrg.get(orgId)
+      if (!prev || s.created_at > prev) lastActivityByOrg.set(orgId, s.created_at)
     }
   }
 
-  return results
+  // consent totals/approvals per org
+  const consentTotalByOrg = new Map<string, number>()
+  const consentApprovedByOrg = new Map<string, number>()
+  for (const c of consents) {
+    if (!c.user_id) continue
+    const orgId = userToOrg.get(c.user_id)
+    if (!orgId) continue
+    consentTotalByOrg.set(orgId, (consentTotalByOrg.get(orgId) ?? 0) + 1)
+    if (c.approved_at) {
+      consentApprovedByOrg.set(orgId, (consentApprovedByOrg.get(orgId) ?? 0) + 1)
+    }
+  }
+
+  const now = Date.now()
+
+  return orgs.map(org => {
+    const totalStudents = totalByOrg.get(org.id) ?? 0
+    const testedStudents = testedByOrg.get(org.id)?.size ?? 0
+    const lastActivity = lastActivityByOrg.get(org.id) ?? null
+    const totalConsents = consentTotalByOrg.get(org.id) ?? 0
+    const approvedCount = consentApprovedByOrg.get(org.id) ?? 0
+
+    const daysSinceActivity = lastActivity
+      ? (now - new Date(lastActivity).getTime()) / (1000 * 60 * 60 * 24)
+      : Infinity
+
+    return {
+      id: org.id,
+      name: org.name,
+      type: org.type,
+      totalStudents,
+      testedStudents,
+      testedPercent: totalStudents > 0 ? Math.round((testedStudents / totalStudents) * 100) : 0,
+      lastActivity,
+      consentRate: totalConsents > 0 ? Math.round((approvedCount / totalConsents) * 100) : 0,
+      status: daysSinceActivity <= 7 ? 'active' : daysSinceActivity <= 30 ? 'low_activity' : 'inactive',
+    }
+  })
 }
 
 export interface StudentFilters {
