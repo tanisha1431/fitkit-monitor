@@ -10,7 +10,7 @@ import { getOrgFunctionActivity } from "@/lib/queries/functions"
 import { Suspense } from "react"
 import Link from "next/link"
 import { notFound } from "next/navigation"
-import { ExternalLink, Download } from "lucide-react"
+import { ExternalLink, Download, CalendarCheck } from "lucide-react"
 import { StatusBadge } from "@/components/shared/StatusBadge"
 
 export const dynamic = "force-dynamic"
@@ -23,12 +23,14 @@ function buildStudentPageHref(
   std?: string,
   div?: string,
   status?: string,
+  tested?: string,
 ) {
   const params = new URLSearchParams()
   params.set("page", String(page))
   if (std) params.set("std", std)
   if (div) params.set("div", div)
   if (status) params.set("status", status)
+  if (tested) params.set("tested", tested)
   return `/organisations/${orgId}?${params.toString()}`
 }
 
@@ -134,17 +136,20 @@ async function OrgDetailContent({
   stdFilter,
   divFilter,
   statusFilter,
+  testedFilter,
 }: {
   orgId: string
   studentPage: number
   stdFilter?: string
   divFilter?: string
   statusFilter?: "complete" | "partial" | "none"
+  testedFilter?: "today"
 }) {
   const detail = await getOrgDetail(orgId, studentPage, 25, {
     std: stdFilter,
     div: divFilter,
     status: statusFilter,
+    testedToday: testedFilter === "today",
   })
   if (!detail) notFound()
 
@@ -166,7 +171,7 @@ async function OrgDetailContent({
     availableSections,
   } = detail
 
-  const filtersActive = Boolean(stdFilter || divFilter || statusFilter)
+  const filtersActive = Boolean(stdFilter || divFilter || statusFilter || testedFilter)
   const studentsHeading = filtersActive
     ? `Students (${totalStudentCount} filtered)`
     : `Students (${totalStudentCount})`
@@ -175,6 +180,7 @@ async function OrgDetailContent({
   if (stdFilter) exportParams.set("std", stdFilter)
   if (divFilter) exportParams.set("div", divFilter)
   if (statusFilter) exportParams.set("status", statusFilter)
+  if (testedFilter) exportParams.set("tested", testedFilter)
   const exportHref = `/organisations/${orgId}/export${
     exportParams.toString() ? `?${exportParams.toString()}` : ""
   }`
@@ -405,6 +411,13 @@ async function OrgDetailContent({
               availableClasses={availableClasses}
               availableSections={availableSections}
             />
+            <Link
+              href={`/organisations/${orgId}/report/today`}
+              className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-input px-3 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+            >
+              <CalendarCheck className="h-3.5 w-3.5" />
+              Today&apos;s Report
+            </Link>
             <a
               href={exportHref}
               className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-input px-3 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
@@ -531,7 +544,7 @@ async function OrgDetailContent({
                   <div className="flex gap-2">
                     {studentPage > 1 && (
                       <Link
-                        href={buildStudentPageHref(orgId, studentPage - 1, stdFilter, divFilter, statusFilter)}
+                        href={buildStudentPageHref(orgId, studentPage - 1, stdFilter, divFilter, statusFilter, testedFilter)}
                         className="px-3 py-1.5 text-sm rounded-md border border-border hover:bg-accent"
                       >
                         Previous
@@ -539,7 +552,7 @@ async function OrgDetailContent({
                     )}
                     {studentPage < totalStudentPages && (
                       <Link
-                        href={buildStudentPageHref(orgId, studentPage + 1, stdFilter, divFilter, statusFilter)}
+                        href={buildStudentPageHref(orgId, studentPage + 1, stdFilter, divFilter, statusFilter, testedFilter)}
                         className="px-3 py-1.5 text-sm rounded-md border border-border hover:bg-accent"
                       >
                         Next
@@ -561,10 +574,10 @@ export default async function OrgDetailPage({
   searchParams,
 }: {
   params: Promise<{ orgId: string }>
-  searchParams: Promise<{ page?: string; std?: string; div?: string; status?: string }>
+  searchParams: Promise<{ page?: string; std?: string; div?: string; status?: string; tested?: string }>
 }) {
   const { orgId } = await params
-  const { page: pageParam, std: stdParam, div: divParam, status: statusParam } = await searchParams
+  const { page: pageParam, std: stdParam, div: divParam, status: statusParam, tested: testedParam } = await searchParams
   const studentPage = Math.max(1, parseInt(pageParam ?? "1", 10) || 1)
   const stdFilter = stdParam?.trim() || undefined
   const divFilter = divParam?.trim() || undefined
@@ -572,6 +585,7 @@ export default async function OrgDetailPage({
     statusParam === "complete" || statusParam === "partial" || statusParam === "none"
       ? statusParam
       : undefined
+  const testedFilter = testedParam === "today" ? testedParam : undefined
 
   return (
     <>
@@ -603,6 +617,7 @@ export default async function OrgDetailPage({
             stdFilter={stdFilter}
             divFilter={divFilter}
             statusFilter={statusFilter}
+            testedFilter={testedFilter}
           />
         </Suspense>
       </div>

@@ -31,6 +31,7 @@ export async function GET(
       status === "complete" || status === "partial" || status === "none"
         ? status
         : undefined,
+    testedToday: url.searchParams.get("tested") === "today",
   }
 
   // Page size large enough to return the entire filtered list in one slice.

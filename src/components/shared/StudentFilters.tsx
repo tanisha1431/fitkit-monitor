@@ -16,6 +16,7 @@ export function StudentFilters({ availableClasses, availableSections }: StudentF
   const currentStd = searchParams.get("std") ?? ""
   const currentDiv = searchParams.get("div") ?? ""
   const currentStatus = searchParams.get("status") ?? ""
+  const currentTested = searchParams.get("tested") ?? ""
 
   const updateParam = (key: string, value: string) => {
     const params = new URLSearchParams(searchParams.toString())
@@ -30,11 +31,12 @@ export function StudentFilters({ availableClasses, availableSections }: StudentF
     params.delete("std")
     params.delete("div")
     params.delete("status")
+    params.delete("tested")
     params.delete("page")
     router.push(`?${params.toString()}`)
   }
 
-  const hasActive = Boolean(currentStd || currentDiv || currentStatus)
+  const hasActive = Boolean(currentStd || currentDiv || currentStatus || currentTested)
 
   return (
     <div className="flex flex-wrap items-center gap-3">
@@ -81,6 +83,18 @@ export function StudentFilters({ availableClasses, availableSections }: StudentF
           <option value="complete">Fully tested</option>
           <option value="partial">In progress</option>
           <option value="none">Not started</option>
+        </select>
+      </div>
+
+      <div className="flex items-center gap-2">
+        <label className="text-xs text-muted-foreground">Activity</label>
+        <select
+          value={currentTested}
+          onChange={(e) => updateParam("tested", e.target.value)}
+          className={selectClass}
+        >
+          <option value="">All time</option>
+          <option value="today">Tested today</option>
         </select>
       </div>
 

@@ -136,6 +136,7 @@ export interface StudentFilters {
   std?: string
   div?: string
   status?: 'complete' | 'partial' | 'none'
+  testedToday?: boolean
 }
 
 // Supabase encodes .in() filters into the request URL. A few thousand UUIDs blow
@@ -264,7 +265,10 @@ export async function getOrgDetail(
   const todayScores = scores.filter(s => s.created_at && s.created_at >= todayStart)
   const weekScores = scores.filter(s => s.created_at && s.created_at >= weekAgo)
 
-  const studentsToday = new Set(todayScores.map(s => s.user_id)).size
+  const testedTodayUsers = new Set(
+    todayScores.map(s => s.user_id).filter((v): v is string => !!v),
+  )
+  const studentsToday = testedTodayUsers.size
   const studentsWeek = new Set(weekScores.map(s => s.user_id)).size
   const studentsSeason = new Set(scores.map(s => s.user_id)).size
 
@@ -317,6 +321,7 @@ export async function getOrgDetail(
   // Per-user set of *assigned* tests completed, plus last activity — built once so
   // the student list, completion summary, and per-test breakdown all reuse it.
   const completedByUser = new Map<string, Set<string>>()
+  const completedTodayByUser = new Map<string, Set<string>>()
   const lastActiveByUser = new Map<string, string>()
   for (const s of scores) {
     if (!s.user_id) continue
@@ -324,6 +329,11 @@ export async function getOrgDetail(
       let set = completedByUser.get(s.user_id)
       if (!set) completedByUser.set(s.user_id, (set = new Set()))
       set.add(s.test_config_id)
+      if (s.created_at && s.created_at >= todayStart) {
+        let todaySet = completedTodayByUser.get(s.user_id)
+        if (!todaySet) completedTodayByUser.set(s.user_id, (todaySet = new Set()))
+        todaySet.add(s.test_config_id)
+      }
     }
     if (s.created_at) {
       const prev = lastActiveByUser.get(s.user_id)
@@ -341,6 +351,9 @@ export async function getOrgDetail(
     const testsDone = doneSet?.size ?? 0
     const doneTests = assignedTestsOrdered.filter(t => doneSet?.has(t.id)).map(t => t.name)
     const pendingTests = assignedTestsOrdered.filter(t => !doneSet?.has(t.id)).map(t => t.name)
+
+    const todaySet = completedTodayByUser.get(user.id)
+    const doneTodayTests = assignedTestsOrdered.filter(t => todaySet?.has(t.id)).map(t => t.name)
 
     const userConsent = consentByUser.get(user.id)
     let consentStatus: 'approved' | 'rejected' | 'pending' | 'bounced' | 'none' = 'none'
@@ -365,6 +378,8 @@ export async function getOrgDetail(
       completionStatus,
       doneTests,
       pendingTests,
+      doneTodayTests,
+      testedToday: testedTodayUsers.has(user.id),
       lastActive: lastActiveByUser.get(user.id) ?? null,
       consentStatus,
     }
@@ -391,6 +406,7 @@ export async function getOrgDetail(
     if (filters.std && String(s.std ?? "") !== filters.std) return false
     if (filters.div && String(s.div ?? "") !== filters.div) return false
     if (filters.status && s.completionStatus !== filters.status) return false
+    if (filters.testedToday && !s.testedToday) return false
     return true
   })
 
