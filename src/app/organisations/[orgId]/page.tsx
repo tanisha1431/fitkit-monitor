@@ -181,9 +181,9 @@ async function OrgDetailContent({
   if (divFilter) exportParams.set("div", divFilter)
   if (statusFilter) exportParams.set("status", statusFilter)
   if (testedFilter) exportParams.set("tested", testedFilter)
-  const exportHref = `/organisations/${orgId}/export${
-    exportParams.toString() ? `?${exportParams.toString()}` : ""
-  }`
+  const exportQuery = exportParams.toString() ? `?${exportParams.toString()}` : ""
+  const exportHref = `/organisations/${orgId}/export${exportQuery}`
+  const classExportHref = `/organisations/${orgId}/report/classwise/export${exportQuery}`
 
   const summaryTotal = completionSummary.total
 
@@ -424,6 +424,13 @@ async function OrgDetailContent({
             >
               <Download className="h-3.5 w-3.5" />
               Export CSV
+            </a>
+            <a
+              href={classExportHref}
+              className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-input px-3 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+            >
+              <Download className="h-3.5 w-3.5" />
+              Class-wise Export
             </a>
           </div>
         </CardHeader>
