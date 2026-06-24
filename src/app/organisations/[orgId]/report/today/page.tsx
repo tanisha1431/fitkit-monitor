@@ -4,12 +4,29 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
 import { getOrgDetail } from "@/lib/queries/organisations"
+import { ReportDatePicker } from "@/components/shared/ReportDatePicker"
 import { Suspense } from "react"
 import Link from "next/link"
 import { notFound } from "next/navigation"
 import { Download } from "lucide-react"
 
 export const dynamic = "force-dynamic"
+
+// Local-time YYYY-MM-DD for a given date (the report's day windows are server-local).
+function toDateKey(d: Date) {
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, "0")
+  const day = String(d.getDate()).padStart(2, "0")
+  return `${y}-${m}-${day}`
+}
+
+// Validate an incoming ?date= value, falling back to today.
+function resolveDate(raw: string | undefined): string {
+  const today = toDateKey(new Date())
+  if (!raw || !/^\d{4}-\d{2}-\d{2}$/.test(raw)) return today
+  // Don't allow future dates — there is no data past today.
+  return raw > today ? today : raw
+}
 
 type ReportStudent = Awaited<ReturnType<typeof getOrgDetail>> extends infer T
   ? T extends { studentList: Array<infer S> }
@@ -28,9 +45,9 @@ function sortRollNo(a: unknown, b: unknown) {
   return String(a ?? "").localeCompare(String(b ?? ""))
 }
 
-async function TodayReportContent({ orgId }: { orgId: string }) {
-  // Large page size returns the full tested-today list in one slice.
-  const detail = await getOrgDetail(orgId, 1, 1_000_000, { testedToday: true })
+async function TodayReportContent({ orgId, date }: { orgId: string; date: string }) {
+  // Large page size returns the full tested list for the day in one slice.
+  const detail = await getOrgDetail(orgId, 1, 1_000_000, { testedToday: true, onDate: date })
   if (!detail) notFound()
 
   const { org, studentList } = detail
@@ -61,7 +78,9 @@ async function TodayReportContent({ orgId }: { orgId: string }) {
       return a.className.localeCompare(b.className)
     })
 
-  const today = new Date().toLocaleDateString("en-GB", {
+  const isToday = date === toDateKey(new Date())
+  const [dy, dm, dd] = date.split("-").map(Number)
+  const dateLabel = new Date(dy, dm - 1, dd).toLocaleDateString("en-GB", {
     weekday: "long",
     day: "numeric",
     month: "long",
@@ -72,24 +91,28 @@ async function TodayReportContent({ orgId }: { orgId: string }) {
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
-          <h3 className="text-xl font-bold">{org.name} — Today&apos;s Testing Report</h3>
+          <h3 className="text-xl font-bold">{org.name} — Testing Report</h3>
           <p className="text-sm text-muted-foreground">
-            {today} · {students.length} student{students.length === 1 ? "" : "s"} tested today
+            {dateLabel} · {students.length} student{students.length === 1 ? "" : "s"} tested{" "}
+            {isToday ? "today" : "on this date"}
           </p>
         </div>
-        <a
-          href={`/organisations/${orgId}/report/today/export`}
-          className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-input px-3 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
-        >
-          <Download className="h-3.5 w-3.5" />
-          Export CSV
-        </a>
+        <div className="flex items-center gap-3">
+          <ReportDatePicker value={date} max={toDateKey(new Date())} />
+          <a
+            href={`/organisations/${orgId}/report/today/export?date=${date}`}
+            className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-input px-3 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+          >
+            <Download className="h-3.5 w-3.5" />
+            Export CSV
+          </a>
+        </div>
       </div>
 
       {students.length === 0 ? (
         <Card>
           <CardContent className="py-12 text-center text-sm text-muted-foreground">
-            No students have been tested today in this organisation.
+            No students were tested {isToday ? "today" : "on this date"} in this organisation.
           </CardContent>
         </Card>
       ) : (
@@ -170,14 +193,18 @@ async function TodayReportContent({ orgId }: { orgId: string }) {
 
 export default async function TodayReportPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ orgId: string }>
+  searchParams: Promise<{ date?: string }>
 }) {
   const { orgId } = await params
+  const { date: dateParam } = await searchParams
+  const date = resolveDate(dateParam)
 
   return (
     <>
-      <TopBar title="Today's Testing Report" />
+      <TopBar title="Testing Report" />
       <div className="p-6">
         <div className="mb-4">
           <Link
@@ -196,7 +223,7 @@ export default async function TodayReportPage({
             </div>
           }
         >
-          <TodayReportContent orgId={orgId} />
+          <TodayReportContent key={date} orgId={orgId} date={date} />
         </Suspense>
       </div>
     </>

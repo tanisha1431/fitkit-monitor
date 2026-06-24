@@ -19,8 +19,13 @@ export async function GET(
 ) {
   const { orgId } = await params
 
-  // Large page size returns the entire tested-today list in one slice.
-  const detail = await getOrgDetail(orgId, 1, 1_000_000, { testedToday: true })
+  // Optional ?date=YYYY-MM-DD selects which day's tested students to export;
+  // defaults to today inside getOrgDetail when omitted/invalid.
+  const dateParam = new URL(request.url).searchParams.get("date") ?? undefined
+  const onDate = dateParam && /^\d{4}-\d{2}-\d{2}$/.test(dateParam) ? dateParam : undefined
+
+  // Large page size returns the entire tested list for the day in one slice.
+  const detail = await getOrgDetail(orgId, 1, 1_000_000, { testedToday: true, onDate })
   if (!detail) {
     return new Response("Organisation not found", { status: 404 })
   }
@@ -70,11 +75,12 @@ export async function GET(
 
   const csv = [header.join(","), ...rows].join("\n")
   const safeName = detail.org.name.replace(/[^a-z0-9]+/gi, "_").toLowerCase()
+  const dateSuffix = onDate ?? "today"
 
   return new Response(csv, {
     headers: {
       "Content-Type": "text/csv; charset=utf-8",
-      "Content-Disposition": `attachment; filename="${safeName}_tested_today.csv"`,
+      "Content-Disposition": `attachment; filename="${safeName}_tested_${dateSuffix}.csv"`,
     },
   })
 }

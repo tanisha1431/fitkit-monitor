@@ -137,6 +137,9 @@ export interface StudentFilters {
   div?: string
   status?: 'complete' | 'partial' | 'none'
   testedToday?: boolean
+  // Restrict the "tested today" / "done today" window to a specific calendar day
+  // (YYYY-MM-DD, server-local). Defaults to today when omitted.
+  onDate?: string
 }
 
 // Supabase encodes .in() filters into the request URL. A few thousand UUIDs blow
@@ -262,7 +265,22 @@ export async function getOrgDetail(
   const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString()
   const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
 
-  const todayScores = scores.filter(s => s.created_at && s.created_at >= todayStart)
+  // Day window for the "tested today" / "done today" figures. When a specific
+  // date is requested, bound it to that calendar day [start, nextDayStart);
+  // otherwise default to today with an open-ended upper bound (unchanged behaviour).
+  let dayStart = todayStart
+  let dayEnd: string | null = null
+  if (filters.onDate) {
+    const [y, m, d] = filters.onDate.split('-').map(Number)
+    if (y && m && d) {
+      dayStart = new Date(y, m - 1, d).toISOString()
+      dayEnd = new Date(y, m - 1, d + 1).toISOString()
+    }
+  }
+  const inDayWindow = (createdAt: string) =>
+    createdAt >= dayStart && (dayEnd === null || createdAt < dayEnd)
+
+  const todayScores = scores.filter(s => s.created_at && inDayWindow(s.created_at))
   const weekScores = scores.filter(s => s.created_at && s.created_at >= weekAgo)
 
   const testedTodayUsers = new Set(
@@ -329,7 +347,7 @@ export async function getOrgDetail(
       let set = completedByUser.get(s.user_id)
       if (!set) completedByUser.set(s.user_id, (set = new Set()))
       set.add(s.test_config_id)
-      if (s.created_at && s.created_at >= todayStart) {
+      if (s.created_at && inDayWindow(s.created_at)) {
         let todaySet = completedTodayByUser.get(s.user_id)
         if (!todaySet) completedTodayByUser.set(s.user_id, (todaySet = new Set()))
         todaySet.add(s.test_config_id)
